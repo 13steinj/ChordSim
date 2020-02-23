@@ -7,8 +7,9 @@ window.onload = () => {
     canvas = document.getElementById('sim');
     console.log(canvas);
     context = canvas.getContext('2d');
-    ring = new Ring(canvas.width / 3, canvas.width / 2,
-                    canvas.height / 2, 3, "#000", 32, 0.18);
+    ring = new Ring(Math.min(canvas.width * 4 / 9, canvas.height * 4 / 9),
+                    canvas.width / 2, canvas.height / 2, 3,
+                    "#000", 32, 0.18);
     ring.draw();
 };
 
