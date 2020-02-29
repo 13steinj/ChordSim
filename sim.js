@@ -224,14 +224,21 @@ class Node extends Circle {
         });
     }
 
-    finger_table() {
+    finger_table(one_indexed = false) {
         if (this.fake) return console.error("Non-joined node");
-        return console.table(this.fingers.map((node, idx) => {
+        let data = this.fingers.map((node, idx) => {
             return {
                 "start": this._start(idx),
+                "interval": `[${node.predecessor.id + 1}, ${node.id})`,
                 "successor": node.id
             };
-        }));
+        });
+        if (one_indexed) {
+            let temp = new Array(data.length + 1);
+            data.forEach((entry, idx) => temp[idx + 1] = entry);
+            data = temp;
+        }
+        return console.table(data);
     }
 
     update_finger_table(s, i) {
