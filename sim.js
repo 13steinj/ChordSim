@@ -1,18 +1,46 @@
 let canvas;
 let context;
 let ring;
+let min_dim;
+let windowChangeDetector;
+
+let dimChangeThreshold = 2;
+let getCurrentMinDim = () =>
+    Math.min(document.body.clientWidth,
+             document.body.clientHeight) * 0.95;
 
 let drawQueue = Promise.resolve();
 
 window.onload = () => {
-    canvas = document.getElementById('sim');
-    let min_dim = Math.min(document.body.clientWidth, document.body.scrollHeight) * 0.9;
-    canvas.setAttribute("width", min_dim);
-    canvas.setAttribute("height", min_dim);
-    context = canvas.getContext('2d');
-    ring = new Ring(Math.min(min_dim * 4 / 9, min_dim * 4 / 9),
-                    min_dim / 2, min_dim / 2, 3, "#000", 32, 0.18);
-    ring.draw();
+    // set up initial values, then create event for resizing the canvas
+    drawQueue.then(() => {
+        canvas = document.getElementById('sim');
+        min_dim = getCurrentMinDim();
+        canvas.setAttribute("width", min_dim);
+        canvas.setAttribute("height", min_dim);
+        context = canvas.getContext('2d');
+        ring = new Ring(4 / 9, 1 / 2, 1 / 2, 3, "#000", 32, 0.18);
+        ring.draw();
+        windowChangeDetector = new function() {
+            this.last_min_dim = min_dim;
+            this.watch = () => {
+                cancelAnimationFrame(this.watcher);
+                let nmin_dim = getCurrentMinDim();
+                if (Math.abs(this.last_min_dim - nmin_dim) >= dimChangeThreshold) {
+                    min_dim = nmin_dim;
+                    canvas.setAttribute("width", min_dim);
+                    canvas.setAttribute("height", min_dim);
+                    drawQueue.then(() => {
+                        context.clearRect(0, 0, canvas.width, canvas.height);
+                        ring.draw();
+                    });
+                }
+                this.last_min_dim = nmin_dim;
+                this.watcher = requestAnimationFrame(this.watch);
+            };
+            this.watcher = window.requestAnimationFrame(this.watch);
+        };
+    });
 };
 
 class Drawable {
@@ -73,31 +101,41 @@ class Circle extends Arc {
 class Node extends Circle {
     constructor(id, ring) {
         let theta = -Math.PI * (1 / 2 + 2 * id / ring.size);
-        let x = ring.x - ring.radius * Math.cos(theta);
-        let y = ring.y + ring.radius * Math.sin(theta);
-        super(ring.radius * Math.PI * 2 / (ring.size * 3), x, y,
+        super(Math.PI * 2 / (ring.size * 3), Math.cos(theta), Math.sin(theta),
               3, undefined, [[], [1, 2]], ["#FFF", "#00FFFF"]);
         this.has_data = false;
         this.fake = true;
         this.id = id;
 
-        let inscribed_side = this.radius * Math.SQRT2;
-        let font_size = Math.floor(inscribed_side);
-        let text_x = x - inscribed_side / 2;
-        let text_y = y + inscribed_side / 2;
-        let font = `${font_size}pt sans-serif`;
-        this.text = new Text(id, text_x, text_y,
-                             inscribed_side,
-                             font, '#000');
 
         this.ring = ring;
         this.path_theta = theta;
     }
 
-    get strokeDash() {
-        return this.__strokeDash[+this.fake];
+    get text() {
+        // eh, fast enough, If needed to be faster, Text can be subclassed to NodeLabel
+        // and then use ratio-based properties there
+        let inscribed_side = this.radius * Math.SQRT2;
+        let font_size = Math.floor(inscribed_side);
+        let text_x = this.x - inscribed_side / 2;
+        let text_y = this.y + inscribed_side / 2;
+        let font = `${font_size}pt sans-serif`;
+        return new Text(this.id, text_x, text_y,
+                        inscribed_side,
+                        font, '#000');
     }
 
+    get radius() { return this.radius_scale * this.ring.radius; }
+    set radius(v) { this.radius_scale = v; }
+
+    get x() { return this.ring.x - this.ring.radius * this.x_scale; }
+    set x(v) { this.x_scale = v; }
+
+    get y() { return this.ring.y + this.ring.radius * this.y_scale; }
+    set y(v) { this.y_scale = v; }
+
+
+    get strokeDash() { return this.__strokeDash[+this.fake]; }
     set strokeDash(v) { this.__strokeDash = v; }
 
     // This is based on two values. First is node blank, Second is has_data
@@ -134,6 +172,7 @@ class Node extends Circle {
 
     // Node joining, aggressive methodology from Chord SIGCOMM01 paper
     join(n_prime) { // n_prime is on the ring
+        if (!this.fake) return console.error("Already joined");
         if (n_prime) {
             if (!this.ring.has_real_node(n_prime.id)) {
                 return console.error("Node to join is not in ring");
@@ -148,6 +187,7 @@ class Node extends Circle {
             this.predecessor = this;
         }
         this.fake = false;
+        drawQueue.then(() => this.draw());
     }
 
     init_finger_table(n_prime) {
@@ -178,7 +218,7 @@ class Node extends Circle {
         });
     }
 
-    log_ftable() {
+    finger_table() {
         if (this.fake) return console.error("Non-joined node");
         return console.table(this.fingers.map((node, idx) => {
             return {
@@ -189,7 +229,11 @@ class Node extends Circle {
     }
 
     update_finger_table(s, i) {
-        // deviation from Chord Paper: set is open on the left end. Why the paper has a closed set, I do not know. I can only guess that they did not double check their math, since in their own simulators they use the non-aggressive stabilization-join method.
+        // deviation from Chord Paper: set is open on the left end.
+        // Why the paper has a closed set, I do not know.
+        // I can only guess that they did not double check their math,
+        // since in their own simulators they use the non-aggressive stabilization-join method.
+        // this is INCOMPLETE. The correct identifiers need to be found.
         if (Node.modular_in(
                 s, this.id + 1, Node.pos_mod(
                     this.fingers[i].id - 1, this.ring.size),
@@ -227,66 +271,6 @@ class Node extends Circle {
         return this;
     }
 
-    populate_fingers() {
-        this.__fingers = new Array(Math.log2(this.ring.size));
-        for (let idx = 0; idx < this.__fingers.length; idx++) {
-            for (let shift = 1 << idx; shift <= this.ring.size; shift++) {
-                let ctry = this.ring.nodes[(this.id + shift) % this.ring.size];
-                if (!ctry.fake) {
-                    this.__fingers[idx] = ctry;
-                    break;
-                }
-            }
-        }
-        if (this.__fingers.some(x => x === undefined))
-            console.error("Damn my math for fingers is wrong");
-    }
-
-    keyInBounds(key, idx, lastShot) {
-        let upper = this.fingers[idx].id;
-        let second;
-        if (idx || lastShot) {
-            upper = [key, key = upper][0];
-        }
-        if (this.id >= upper) {
-            upper = this.ring.size - 1;
-            second = upper;
-        }
-        if (key < upper && key > this.id) return true;
-        if (key < second && key >= 0) return true;
-        return false;
-    }
-
-    fetch(key) {
-        if (this.data.has(key)) {
-            console.log(`${key} found at node ${this.id}`);
-            return `${key}@${this.id}`
-        }
-        for (let idx = this.fingers.length; idx >= 0; idx--) {
-            if (this.keyInBounds(key, idx % this.fingers.length, !idx)) {
-                let modid = idx % this.fingers.length;
-                console.log(`Passing on to ${this.fingers[modid].id}`);
-                return this.fingers[modid].fetch(key);
-            }
-        }
-        console.error(`${key} not found`);
-        return undefined;
-    }
-
-    fetch2(key) {
-        if (this.data.has(key)) {
-            console.log(`${key} found at node ${this.id}`);
-            return `${key}@${this.id}`
-        }
-        succ = this.find_successor(id);
-        if (succ.data.has(key)) {
-            console.log(`${key} found at node ${succ.id}`);
-            return `${key}@${succ.id}`
-        }
-        console.error(`${key} not found`);
-        return null;
-    }
-
     draw() {
         super.draw();
         this.text.draw();
@@ -299,6 +283,13 @@ class Ring extends Circle {
         this.size = size;
         this.nodes = [...Array(size)].map((_, idx) => new Node(idx, this));
     }
+
+    get radius() { return this.radius_ratio * min_dim; }
+    set radius(v) { this.radius_ratio = v; }
+    get x() { return this.x_ratio * min_dim; }
+    set x(v) { this.x_ratio = v; }
+    get y() { return this.y_ratio * min_dim; }
+    set y(v) { this.y_ratio = v; }
 
     has_real_node(id) { return !this.nodes[id].fake; }
 
