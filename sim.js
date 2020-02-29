@@ -13,7 +13,7 @@ let drawQueue = Promise.resolve();
 
 window.onload = () => {
     // set up initial values, then create event for resizing the canvas
-    drawQueue.then(() => {
+    drawQueue = drawQueue.then(() => {
         canvas = document.getElementById('sim');
         min_dim = getCurrentMinDim();
         canvas.setAttribute("width", min_dim);
@@ -30,7 +30,7 @@ window.onload = () => {
                     min_dim = nmin_dim;
                     canvas.setAttribute("width", min_dim);
                     canvas.setAttribute("height", min_dim);
-                    drawQueue.then(() => {
+                    drawQueue = drawQueue.then(() => {
                         context.clearRect(0, 0, canvas.width, canvas.height);
                         ring.draw();
                     });
@@ -103,17 +103,23 @@ class Node extends Circle {
         let theta = -Math.PI * (1 / 2 + 2 * id / ring.size);
         super(Math.PI * 2 / (ring.size * 3), Math.cos(theta), Math.sin(theta),
               3, undefined, [[], [1, 2]], ["#FFF", "#00FFFF"]);
-        this.has_data = false;
         this.fake = true;
         this.id = id;
 
-
         this.ring = ring;
         this.path_theta = theta;
+
+        this.__dataset = new Set();
+        this.data = undefined;
     }
 
+    get has_data() { return this.data !== undefined; }
+
+    get dataset() { return !this.fake ? this.__dataset : undefined; }
+
     get text() {
-        // eh, fast enough, If needed to be faster, Text can be subclassed to NodeLabel
+        // eh, fast enough, If needed to be faster,
+        // Text can be subclassed to NodeLabel
         // and then use ratio-based properties there
         let inscribed_side = this.radius * Math.SQRT2;
         let font_size = Math.floor(inscribed_side);
@@ -187,7 +193,7 @@ class Node extends Circle {
             this.predecessor = this;
         }
         this.fake = false;
-        drawQueue.then(() => this.draw());
+        drawQueue = drawQueue.then(() => this.draw());
     }
 
     init_finger_table(n_prime) {
@@ -271,10 +277,39 @@ class Node extends Circle {
         return this;
     }
 
-    draw() {
-        super.draw();
-        this.text.draw();
+    get(key) {
+        if (Node.modular_in(key, this.predecessor.id + 1, this.id, 32))
+            return this.ring.nodes[key].data;
+        return this.find_successor(key).get(key);
     }
+
+    put(key, data) {
+        if (Node.modular_in(key, this.predecessor.id + 1, this.id, 32)) {
+            this.dataset.add(key);
+            this.ring.nodes[key].data = data;
+            drawQueue = drawQueue.then(() => this.ring.nodes[key].draw());
+            return;
+        }
+        return this.find_successor(key).put(key, data);
+    }
+
+    del(key) {
+        if (Node.modular_in(key, this.predecessor.id + 1, this.id, 32)) {
+            let ret = [this.dataset.delete(key), this.ring.nodes[key].data];
+            this.ring.nodes[key].data = undefined;
+            drawQueue = drawQueue.then(() => this.ring.nodes[key].draw());
+            return ret;
+        }
+        return this.find_successor(key).del(key);
+    }
+
+    pop(key, bad_default = null) {
+        let ret = del(key);
+        if (!ret[0]) return bad_default;
+        return ret[1];
+    }
+
+    draw() { super.draw(); this.text.draw(); }
 };
 
 class Ring extends Circle {
